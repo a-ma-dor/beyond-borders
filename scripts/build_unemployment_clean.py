@@ -9,7 +9,7 @@ OUT = BASE / "data" / "unemployment_clean.csv"
 ISO2_TO_ISO3 = {
     "AT": "AUT", "BE": "BEL", "BG": "BGR", "HR": "HRV", "CY": "CYP",
     "CZ": "CZE", "DE": "DEU", "DK": "DNK", "EE": "EST", "ES": "ESP",
-    "FI": "FIN", "FR": "FRA", "GR": "GRC", "HU": "HUN", "IE": "IRL",
+    "FI": "FIN", "FR": "FRA", "GR": "GRC", "EL": "GRC", "HU": "HUN", "IE": "IRL",
     "IT": "ITA", "LT": "LTU", "LU": "LUX", "LV": "LVA", "MT": "MLT",
     "NL": "NLD", "PL": "POL", "PT": "PRT", "RO": "ROU", "SE": "SWE",
     "SI": "SVN", "SK": "SVK", "IS": "ISL", "NO": "NOR",

@@ -55,7 +55,30 @@ async function ensureLibs() {
 }
 
 const formatCount = v =>
-  !Number.isFinite(v) ? '—' : d3.format('~s')(Math.round(v));
+  !Number.isFinite(v) ? '—' : d3.format(',.0f')(Math.round(v));
+
+const comparePins = [];
+let initialSelectionDone = false;
+let countryNames = Object.create(null);
+let flows = [];
+let factors = {};
+
+function showDetail(html) {
+  const panel = document.getElementById('detailPanel');
+  const body  = document.getElementById('detail-body');
+  if (!panel || !body) return;
+  if (html != null) body.innerHTML = html;
+  panel.classList.add('open');
+  panel.style.display = 'block';
+}
+
+function hideDetail() {
+  const panel = document.getElementById('detailPanel');
+  if (panel) {
+    panel.classList.remove('open');
+    panel.style.display = 'none';
+  }
+}
 
 (async function boot() {
   try { await ensureLibs(); }
@@ -93,7 +116,7 @@ const formatCount = v =>
   // Country picker state
   let countryPickerBuilt = false;
   let countryIds = [];
-  const countryNames = Object.create(null);
+  countryNames = Object.create(null);
   let selectedCountries = new Set();
 
   // D3 overlay for minis — never steal clicks
@@ -173,8 +196,8 @@ const formatCount = v =>
   // Arrow origin (Ukraine-ish)
   const ARROW_ORIGIN = [49.0, 32.0];
 
-  let flows   = [];
-  let factors = {};
+  flows   = [];
+  factors = {};
   let mapData = null;
 
   // Arrow destination lat/lon per ISO3
@@ -191,7 +214,7 @@ const formatCount = v =>
   const arrowColor = d3.scaleSequential(d3.interpolatePlasma).domain([0, 1]).clamp(true);
 
   // Minis config
-// Minis config
+  // Minis config
 const VARS = ['gdp_pc', 'unemployment', 'alloc_pct_gdp'];
 
 const COLORS = { 
@@ -215,13 +238,15 @@ const XFORM = {
   alloc_pct_gdp: d => Math.log1p(Math.max(0, (d > 1 ? d / 100 : d) * 100)) // percent to fraction then scale
 };
 
+const INVERTED_VARS = new Set(['unemployment']); // higher unemployment -> smaller box
+
   function buildMiniScales() {
     miniScale = {};
-    for (const v of VARS) {
-      const fn = XFORM[v];
-      if (typeof fn !== 'function') continue;
+  for (const v of VARS) {
+    const fn = XFORM[v];
+    if (typeof fn !== 'function') continue;
 
-      const vals = Object.values(factors)
+    const vals = Object.values(factors)
         .map(r => fn(+r[v] || 0))
         .filter(Number.isFinite)
         .sort(d3.ascending);
@@ -300,14 +325,14 @@ const fmtPct = v => {
       .sort((a, b) => a.name.localeCompare(b.name));
 
     countryIds = sorted.map(d => d.id);
-    selectedCountries = new Set(countryIds);
+    selectedCountries = new Set(countryIds); // will be overridden by initial landing selection
 
     list.innerHTML = '';
     for (const { id, name } of sorted) {
       const label = document.createElement('label');
       label.dataset.name = name.toLowerCase();
       label.innerHTML =
-        `<input type="checkbox" value="${id}" checked> ${name}`;
+        `<input type="checkbox" value="${id}"> ${name}`;
       list.appendChild(label);
     }
 
@@ -526,12 +551,10 @@ const fmtPct = v => {
           // Minis live at base
           centroidLL[id] = [base[0], base[1]];
 
-          // Label: at arrow destination, nudged down a bit; otherwise polygon center
+          // Label: at arrow destination; otherwise polygon center
           let labelLL;
           if (hasFlow) {
-            const destPt  = map.latLngToLayerPoint(base);
-            const nudged  = L.point(destPt.x, destPt.y + 18); // sit just below minis/arrows
-            labelLL       = map.layerPointToLatLng(nudged);
+            labelLL = L.latLng(base[0], base[1]);
           } else {
             labelLL = polyCenter;
           }
@@ -562,29 +585,37 @@ const fmtPct = v => {
             click: () => {
               const f   = factors[id] || {};
               const ref = flows.find(x => x.dest_iso3 === id) || {};
-              const panel = document.getElementById('info-body');
-              if (!panel) return;
-
               const permDelta = Number.isFinite(f.ua_perm_delta) ? f.ua_perm_delta : null;
               const permRatio = Number.isFinite(f.ua_perm_per_refugee) ? f.ua_perm_per_refugee : null;
 
               const permDeltaText = permDelta != null ? fmtNum(permDelta)        : '—';
               const permRatioText = permRatio != null ? permRatio.toFixed(3) : '—';
 
-              panel.innerHTML =
-                `<div><b>${name}</b> (${id || '—'})</div>
-                 <div>GDP pc: <b>${fmtNum(f.gdp_pc)}</b></div>
-                 <div>Unemployment: <b>${fmtPct(f.unemployment)}</b></div>
-                 <div>Allocations incl EU (% GDP): <b>${fmtPct(f.alloc_pct_gdp)}</b></div>`;
+              // pin/unpin
+              const idx = comparePins.indexOf(id);
+              if (idx >= 0) comparePins.splice(idx, 1);
+              else {
+                comparePins.push(id);
+                if (comparePins.length > 5) comparePins.shift();
+              }
+              renderCompare();
             }
           });
         }
       }).addTo(map);
 
-      if (pickerOptions.length) {
-        buildCountryPicker(pickerOptions);
+    if (pickerOptions.length) {
+      buildCountryPicker(pickerOptions);
+      document.getElementById('countryPicker')?.setAttribute('open', 'open');
+      if (!initialSelectionDone && countryIds.length) {
+        const picks = countryIds.slice().sort(() => Math.random() - 0.5).slice(0, Math.min(6, countryIds.length));
+        selectedCountries = new Set(picks);
+        syncCountryCheckboxes();
+        refreshVisibleCountries();
+        initialSelectionDone = true;
       }
     }
+  }
 
     // Arrows
     function getArrowColorValue(d) {
@@ -592,6 +623,43 @@ const fmtPct = v => {
       const key = sel?.value || 'pct_children';
       const val = Number.isFinite(d[key]) ? d[key] : 0;
       return Math.max(0, Math.min(1, val));
+    }
+
+    function renderCompare() {
+      const panel = document.getElementById('detailPanel');
+      const body = document.getElementById('detail-body');
+      if (!panel || !body) return;
+      if (!comparePins.length) {
+        body.innerHTML = 'Click countries to add them here.';
+        hideDetail();
+        return;
+      }
+      const rows = comparePins.map(id => {
+        const name = countryNames[id] || id;
+        const f = factors[id] || {};
+        const ref = flows.find(x => x.dest_iso3 === id) || {};
+        const arrowVal = getArrowColorValue(ref);
+        return `
+          <div class="compare-card">
+            <h4>${name} (${id})</h4>
+            <div class="compare-rows">
+              <div class="compare-row"><span class="label">GDP pc</span><span>${fmtNum(f.gdp_pc)}</span></div>
+              <div class="compare-row"><span class="label">Unemployment</span><span>${fmtPct(f.unemployment)}</span></div>
+              <div class="compare-row"><span class="label">Allocations % GDP</span><span>${fmtPct(f.alloc_pct_gdp)}</span></div>
+              <div class="compare-row"><span class="label">Total refugees</span><span>${formatCount(ref.total_refugees)}</span></div>
+              <div class="compare-row"><span class="label">Arrow metric</span><span>${fmtPct(arrowVal)}</span></div>
+              <div class="compare-row"><span class="label">Children %</span><span>${fmtPct(ref.pct_children)}</span></div>
+              <div class="compare-row"><span class="label">Adult women %</span><span>${fmtPct(ref.pct_women_adult)}</span></div>
+              <div class="compare-row"><span class="label">Adult men %</span><span>${fmtPct(ref.pct_men_adult)}</span></div>
+              <div class="compare-row"><span class="label">Elderly %</span><span>${fmtPct(ref.pct_elderly)}</span></div>
+            </div>
+          </div>
+        `;
+      }).join('');
+      body.innerHTML = `<div class="compare-list">${rows}</div>`;
+      panel.classList.add('open');
+      panel.style.display = 'block';
+      panel.focus?.();
     }
 
     function bez(a, c, b, n = 40) {
@@ -611,11 +679,13 @@ const fmtPct = v => {
       arrowsGroup.eachLayer(l => {
         existing.push(l);
         const path = l._path;
-        if (path) path.classList.add('arrow-fade');
-        else l.setStyle?.({ opacity: 0 });
+        if (path) {
+          path.style.transition = 'opacity 200ms ease';
+          path.style.opacity = '0';
+        }
       });
       if (existing.length) {
-        setTimeout(() => existing.forEach(l => arrowsGroup.removeLayer(l)), 220);
+        setTimeout(() => existing.forEach(l => arrowsGroup.removeLayer(l)), 200);
       } else {
         arrowsGroup.clearLayers();
       }
@@ -640,7 +710,9 @@ const fmtPct = v => {
         }).addTo(arrowsGroup);
         const path = layer._path;
         if (path) {
-          requestAnimationFrame(() => path.classList.add('arrow-visible'));
+          path.style.transition = 'opacity 250ms ease';
+          path.style.opacity = '0';
+          requestAnimationFrame(() => { path.style.opacity = '0.9'; });
         }
       }
     }
@@ -655,6 +727,7 @@ const fmtPct = v => {
       const active = getActiveFactors();
       const mode   = getBoxMode();
       const ids    = Object.keys(factors).filter(isCountryVisible);
+      const shouldTransition = (mode !== drawMinis._lastMode);
 
       // Only keep variables we actually know how to transform + have scales for
       const activeVars = active.filter(v =>
@@ -679,7 +752,10 @@ const fmtPct = v => {
           const transform = XFORM[v] || (x => x);
           const x = transform(+rec[v] || 0);
           const scale = miniScale[v] || (x => BOX_MIN);
-          const s = Math.max(BOX_MIN, Math.min(BOX_MAX, scale(x)));
+          let s = Math.max(BOX_MIN, Math.min(BOX_MAX, scale(x)));
+          if (INVERTED_VARS.has(v)) {
+            s = BOX_MIN + (BOX_MAX - s); // invert scale so higher value -> smaller box
+          }
           return { varName: v, s };
         });
 
@@ -708,66 +784,58 @@ const fmtPct = v => {
 
       const rects = merged.selectAll('rect').data(d => d.sizes, s => s.varName);
 
-      rects.enter()
+      const rectsEnter = rects.enter()
         .append('rect')
         .attr('rx', 2)
         .attr('ry', 2)
         .attr('stroke-width', 1)
-        .style('opacity', 0)
-        .merge(rects)
+        .style('opacity', 0);
+
+      const rectsMerged = rectsEnter.merge(rects)
         .attr('fill',   s => COLORS[s.varName]   || '#9ca3af')
-        .attr('stroke', s => STROKES[s.varName]  || '#374151')
+        .attr('stroke', s => STROKES[s.varName]  || '#374151');
+
+      const applyPos = sel => sel
         .attr('x', function (s, i) {
-          const d = this.parentNode.__data__;
           const w = BOX_MAX;
           if (mode === 'side') {
-            const totalW = d.sizes.length * w + (d.sizes.length - 1) * 4;
-            return -totalW / 2 + i * (w + 4);
+            return i * (w + 4);
           }
           return -w / 2;
         })
         .attr('y', function (s, i) {
           const d = this.parentNode.__data__;
           if (mode === 'side') {
-            return -s.s / 2;
+            return BOX_MAX - s.s;
           }
           const total = d3.sum(d.sizes, e => e.s) + (d.sizes.length - 1) * 2;
           const top   = -total / 2 + d3.sum(d.sizes.slice(0, i), e => e.s) + i * 2;
           return top;
         })
-        .attr('width', function (s) {
-          return BOX_MAX;
-        })
-        .attr('height', function (s) {
-          if (mode === 'side') {
-            return s.s;
-          }
-          return s.s;
-        })
-        .transition()
-        .duration(220)
-        .ease(d3.easeCubicOut)
-        .style('opacity', 1);
+        .attr('width', BOX_MAX)
+        .attr('height', s => s.s);
+
+      if (shouldTransition) {
+        applyPos(rectsMerged.transition().duration(260).ease(d3.easeCubicInOut));
+        rectsEnter.transition().duration(200).style('opacity', 1);
+      } else {
+        applyPos(rectsMerged);
+        rectsMerged.style('opacity', 1);
+      }
 
       rects.exit()
         .transition()
         .duration(180)
-        .ease(d3.easeCubicIn)
         .style('opacity', 0)
         .remove();
 
-      merged
-        .transition()
-        .duration(200)
-        .ease(d3.easeCubicOut)
-        .style('opacity', 1);
-
+      merged.style('opacity', 1);
       groups.exit()
         .transition()
         .duration(180)
-        .ease(d3.easeCubicIn)
         .style('opacity', 0)
         .remove();
+      drawMinis._lastMode = mode;
     }
 
     // Legends
@@ -779,9 +847,9 @@ const fmtPct = v => {
       const labelEl = document.getElementById('arrowColorVar');
       const label = labelEl?.selectedOptions?.[0]?.text || 'Children %';
 
-      const W = 240, H = 120;
-      const P = { t: 8, r: 14, b: 10, l: 14 };
-      const gradH = 12;
+      const W = 300, H = 180;
+      const P = { t: 8, r: 16, b: 12, l: 16 };
+      const gradH = 16;
 
       const svg = root
         .append('svg')
@@ -795,6 +863,12 @@ const fmtPct = v => {
         .attr('y', P.t + 12)
         .attr('class', 'legend-title')
         .text(`Arrow color — ${label}`);
+      svg
+        .append('text')
+        .attr('x', P.l)
+        .attr('y', P.t + 26)
+        .attr('class', 'legend-tick')
+        .text('0% to 100% of chosen demographic');
 
       const defs = svg.append('defs');
       const grad = defs
@@ -813,7 +887,7 @@ const fmtPct = v => {
       const gradW = W - P.l - P.r;
       const g = svg
         .append('g')
-        .attr('transform', `translate(${P.l},${P.t + 18})`);
+        .attr('transform', `translate(${P.l},${P.t + 36})`);
 
       g.append('rect')
         .attr('width', gradW)
@@ -856,7 +930,7 @@ const fmtPct = v => {
 
       const rows = svg
         .append('g')
-        .attr('transform', `translate(${P.l},${P.t + 18 + gradH + 38})`);
+        .attr('transform', `translate(${P.l},${P.t + 18 + gradH + 48})`);
 
       rows
         .selectAll('g.row')
@@ -875,12 +949,12 @@ const fmtPct = v => {
             .attr('stroke', '#6b7280')
             .attr('stroke-linecap', 'round')
             .attr('stroke-width', d.w);
-          d3.select(this)
-            .append('text')
-            .attr('x', 72)
-            .attr('y', 4)
-            .attr('class', 'legend-tick')
-            .text(d.label);
+            d3.select(this)
+              .append('text')
+              .attr('x', 72)
+              .attr('y', 4)
+              .attr('class', 'legend-tick')
+              .text(d.label);
         });
     }
 
@@ -959,6 +1033,13 @@ const fmtPct = v => {
       });
     });
 
+    document.querySelectorAll('input[name=boxmode]').forEach(el => {
+      el.addEventListener('change', () => {
+        safe(drawMinis, '[ui:minis:boxmode]');
+        safe(renderBoxLegend, '[ui:legend-boxes]');
+      });
+    });
+
     document.getElementById('resetBtn')?.addEventListener('click', () => {
       document
         .querySelectorAll('.controls .factor-toggle')
@@ -975,7 +1056,26 @@ const fmtPct = v => {
       safe(drawMinis,  '[reset:minis]');
       safe(renderArrowLegend, '[reset:legend-arrows]');
       safe(renderBoxLegend,   '[reset:legend-boxes]');
+      comparePins.length = 0;
+      renderCompare();
+      hideDetail();
     });
+
+    const closeBtn = document.getElementById('detailClose');
+    if (closeBtn) {
+      closeBtn.addEventListener('click', e => {
+        e.preventDefault();
+        e.stopPropagation();
+        hideDetail();
+      });
+    }
+    const clearBtn = document.getElementById('detailClear');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        comparePins.length = 0;
+        renderCompare();
+      });
+    }
 
   } catch (e) {
     console.error('[load error]', e);

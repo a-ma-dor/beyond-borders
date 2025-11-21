@@ -23,6 +23,27 @@ def pick(target):
             return c
     raise SystemExit(f"Could not find column for {target!r}")
 
+def pick_age_sum(age_map, combos):
+    for combo in combos:
+        vals = [age_map.get(code) for code in combo]
+        vals = [v for v in vals if pd.notna(v)]
+        if vals:
+            return sum(vals)
+    return 0.0
+
+CHILD_COMBOS = [
+    ["Y_LT18"],
+    ["Y_LT14", "Y15-17"],
+    ["Y0-14", "Y15-17"],
+    ["Y0-14", "Y14-17"],
+]
+
+ELDER_COMBOS = [
+    ["Y_GE65"],
+    ["Y65-79", "Y_GE80"],
+    ["Y65-79", "Y80-84", "Y85-89", "Y_GE90"],
+]
+
 cit_col   = pick("citizen")
 sex_col   = pick("sex")
 age_col   = pick("age")
@@ -100,45 +121,30 @@ ELDER_AGES = {"Y_GE65", "Y65-79", "Y_GE80", "Y80-84", "Y85-89", "Y_GE90"}
 # --- Disjoint bins ---
 core = df[df["age"] != "UNK"]
 
-# Total refugees per host (sex=T, any age except UNK)
+# Total refugees per host = sex T, age TOTAL (official headline)
 total = (
-    core[core["sex"] == "T"]
-    .groupby("geo", as_index=False)["obs_value"]
-    .sum()
+    df[(df["sex"] == "T") & (df["age"] == "TOTAL")]
+    [["geo", "obs_value"]]
     .rename(columns={"obs_value": "total_refugees"})
 )
 
 # Children (all sexes, <18)
-children = (
-    core[(core["sex"] == "T") & (core["age"].isin(CHILD_AGES))]
-    .groupby("geo", as_index=False)["obs_value"]
-    .sum()
-    .rename(columns={"obs_value": "children"})
-)
+def calc_bucket(df_in, sex_code, combos, label):
+    records = []
+    for geo, sub in df_in[df_in["sex"] == sex_code].groupby("geo"):
+        age_map = dict(zip(sub["age"], sub["obs_value"]))
+        val = pick_age_sum(age_map, combos)
+        records.append({"geo": geo, label: val})
+    return pd.DataFrame(records)
 
-# Elderly (all sexes, 65+)
-elderly = (
-    core[(core["sex"] == "T") & (core["age"].isin(ELDER_AGES))]
-    .groupby("geo", as_index=False)["obs_value"]
-    .sum()
-    .rename(columns={"obs_value": "elderly"})
-)
-
-# Women, adult 18–64 (sex=F, ages not child/elder)
-women_adult = (
-    core[(core["sex"] == "F") & (~core["age"].isin(CHILD_AGES | ELDER_AGES))]
-    .groupby("geo", as_index=False)["obs_value"]
-    .sum()
-    .rename(columns={"obs_value": "women_adult"})
-)
-
-# Men, adult 18–64 (sex=M, ages not child/elder)
-men_adult = (
-    core[(core["sex"] == "M") & (~core["age"].isin(CHILD_AGES | ELDER_AGES))]
-    .groupby("geo", as_index=False)["obs_value"]
-    .sum()
-    .rename(columns={"obs_value": "men_adult"})
-)
+children    = calc_bucket(core, "T", CHILD_COMBOS, "children")
+elderly     = calc_bucket(core, "T", ELDER_COMBOS, "elderly")
+tot_f       = df[(df["sex"] == "F") & (df["age"] == "TOTAL")][["geo", "obs_value"]].rename(columns={"obs_value": "women_total"})
+tot_m       = df[(df["sex"] == "M") & (df["age"] == "TOTAL")][["geo", "obs_value"]].rename(columns={"obs_value": "men_total"})
+child_f     = calc_bucket(core, "F", CHILD_COMBOS, "women_child")
+child_m     = calc_bucket(core, "M", CHILD_COMBOS, "men_child")
+elder_f     = calc_bucket(core, "F", ELDER_COMBOS, "women_elder")
+elder_m     = calc_bucket(core, "M", ELDER_COMBOS, "men_elder")
 
 # Unknown ages (sex=T, age=UNK) — tracked separately
 unknown_age = (
@@ -152,15 +158,33 @@ unknown_age = (
 flow = (
     total.merge(children, on="geo", how="left")
          .merge(elderly, on="geo", how="left")
-         .merge(women_adult, on="geo", how="left")
-         .merge(men_adult, on="geo", how="left")
          .merge(unknown_age, on="geo", how="left")
+         .merge(tot_f, on="geo", how="left")
+         .merge(tot_m, on="geo", how="left")
+         .merge(child_f, on="geo", how="left")
+         .merge(child_m, on="geo", how="left")
+         .merge(elder_f, on="geo", how="left")
+         .merge(elder_m, on="geo", how="left")
 )
 
-for col in ["children", "elderly", "women_adult", "men_adult", "unknown_age"]:
-    flow[col] = flow[col].fillna(0.0)
+for col in ["children", "elderly", "unknown_age",
+            "women_total","men_total","women_child","men_child","women_elder","men_elder"]:
+    if col in flow.columns:
+        flow[col] = flow[col].fillna(0.0)
 
-# Percentages (disjoint bins using total_refugees)
+# Derive adult women/men = total by sex minus child/elder for that sex
+flow["women_adult_raw"] = (flow["women_total"] - flow["women_child"] - flow["women_elder"]).clip(lower=0)
+flow["men_adult_raw"]   = (flow["men_total"]   - flow["men_child"]   - flow["men_elder"]).clip(lower=0)
+
+# Scale adult men/women so children+elderly+adults ~= total_refugees
+flow["adult_total_target"] = (flow["total_refugees"] - flow["children"] - flow["elderly"]).clip(lower=0)
+flow["adult_raw_sum"] = flow["women_adult_raw"] + flow["men_adult_raw"]
+scale = flow["adult_total_target"] / flow["adult_raw_sum"].replace({0: pd.NA})
+flow["women_adult"] = (flow["women_adult_raw"] * scale).fillna(0)
+flow["men_adult"]   = (flow["men_adult_raw"]   * scale).fillna(0)
+
+# Percentages (disjoint bins using official total_refugees)
+flow.loc[flow["total_refugees"] <= 0, "total_refugees"] = float("nan")
 flow["pct_children"]    = flow["children"]    / flow["total_refugees"]
 flow["pct_elderly"]     = flow["elderly"]     / flow["total_refugees"]
 flow["pct_women_adult"] = flow["women_adult"] / flow["total_refugees"]
@@ -171,7 +195,7 @@ flow["pct_unknown_age"] = flow["unknown_age"] / flow["total_refugees"]
 iso2_to_iso3 = {
     "AT": "AUT", "BE": "BEL", "BG": "BGR", "HR": "HRV", "CY": "CYP",
     "CZ": "CZE", "DE": "DEU", "DK": "DNK", "EE": "EST", "ES": "ESP",
-    "FI": "FIN", "FR": "FRA", "GR": "GRC", "HU": "HUN", "IE": "IRL",
+    "FI": "FIN", "FR": "FRA", "GR": "GRC", "EL": "GRC", "HU": "HUN", "IE": "IRL",
     "IS": "ISL", "IT": "ITA", "LT": "LTU", "LU": "LUX", "LV": "LVA",
     "MT": "MLT", "NL": "NLD", "NO": "NOR", "PL": "POL", "PT": "PRT",
     "RO": "ROU", "SE": "SWE", "SI": "SVN", "SK": "SVK",

@@ -16,7 +16,7 @@
         <label><input type="checkbox" class="factor-toggle" data-factor value="gdp_pc" checked> GDP per capita</label>
         <label><input type="checkbox" class="factor-toggle" data-factor value="unemployment" checked> Unemployment</label>
         <label><input type="checkbox" class="factor-toggle" data-factor value="alloc_pct_gdp"> Total allocations incl EU (% GDP)</label>
-        <div class="control-row">
+        <div class="control-row boxmode-row">
           <label><input type="radio" name="boxmode" value="stack" checked> Stack</label>
           <label><input type="radio" name="boxmode" value="side"> Side-by-side</label>
         </div>
@@ -54,14 +54,20 @@
 
       <div id="legend-arrows"></div>
       <div id="legend-boxes"></div>
-
-      <div class="info">
-        <h3>Country</h3>
-        <div id="info-body">Click a country to pin its stats.</div>
-      </div>
     </aside>
 
     <main id="map"></main>
+
+    <aside class="detail-panel" id="detailPanel" aria-live="polite">
+      <button class="detail-close" id="detailClose" type="button" aria-label="Close">×</button>
+      <div class="detail-header">
+        <h3>Compare</h3>
+        <div class="detail-actions">
+          <button id="detailClear" type="button">Clear</button>
+        </div>
+      </div>
+      <div id="detail-body">Click countries to add them here.</div>
+    </aside>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
