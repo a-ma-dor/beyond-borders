@@ -58,10 +58,18 @@ const formatCount = v =>
   !Number.isFinite(v) ? '—' : d3.format(',.0f')(Math.round(v));
 
 const comparePins = [];
-let initialSelectionDone = false;
+let selectedCountries = new Set();
 let countryNames = Object.create(null);
 let flows = [];
 let factors = {};
+let initialSelectionDone = false;
+let renderCompare = () => {};
+
+function syncCompareFromSelection(openPanel = false) {
+  comparePins.length = 0;
+  selectedCountries.forEach(id => comparePins.push(id));
+  renderCompare(openPanel);
+}
 
 function showDetail(html) {
   const panel = document.getElementById('detailPanel');
@@ -117,7 +125,6 @@ function hideDetail() {
   let countryPickerBuilt = false;
   let countryIds = [];
   countryNames = Object.create(null);
-  let selectedCountries = new Set();
 
   // D3 overlay for minis — never steal clicks
   const svgMini = L.svg({ pane: 'minis', padding: 0.5 }).addTo(map);
@@ -206,8 +213,30 @@ function hideDetail() {
   // Minis / centroids location per ISO3
   const centroidLL = Object.create(null);
 
-  const isCountryVisible = id =>
-    selectedCountries.size ? selectedCountries.has(id) : false;
+const isCountryVisible = id =>
+  selectedCountries.size ? selectedCountries.has(id) : false;
+
+const getCountryStyle = id => {
+  const isSel = selectedCountries.has(id);
+  if (id === 'UKR') {
+    return {
+      color: '#0041a3',
+      weight: isSel ? 2.2 : 1.3,
+      opacity: 1,
+      fill: true,
+      fillOpacity: isSel ? 0.48 : 0.36,
+      fillColor: 'url(#ukraine-flag)'
+    };
+  }
+  return {
+    color: '#334155',
+    weight: isSel ? 1.5 : 1.0,
+    opacity: isSel ? 1 : 0.95,
+    fill: true,
+    fillOpacity: isSel ? 0.22 : 0.10,
+    fillColor: isSel ? '#bae6fd' : '#e7edf4'
+  };
+};
 
   // Scales
   const widthScale = d3.scaleSqrt().range([1, 12]);
@@ -229,7 +258,57 @@ const STROKES = {
   alloc_pct_gdp: '#854d0e'
 };
 
-const BOX_MIN = 6, BOX_MAX = 28;
+const METRIC_COLORS = {
+  gdp_pc: COLORS.gdp_pc,
+  unemployment: COLORS.unemployment,
+  alloc_pct_gdp: COLORS.alloc_pct_gdp
+};
+
+function ensureUkraineGradient(renderer) {
+  let svg = renderer?._container || renderer?._rootGroup?.ownerSVGElement;
+  if (!svg) {
+    // fallback: global defs
+    svg = document.getElementById('flag-defs');
+    if (!svg) {
+      svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('id', 'flag-defs');
+      svg.setAttribute('width', '0');
+      svg.setAttribute('height', '0');
+      svg.style.position = 'absolute';
+      svg.style.left = '-9999px';
+      document.body.appendChild(svg);
+    }
+  }
+  let defs = svg.querySelector('defs');
+  if (!defs) {
+    defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    svg.insertBefore(defs, svg.firstChild);
+  }
+  let grad = defs.querySelector('#ukraine-flag');
+  if (!grad) {
+    grad = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
+    grad.setAttribute('id', 'ukraine-flag');
+    grad.setAttribute('x1', '0%');
+    grad.setAttribute('x2', '0%');
+    grad.setAttribute('y1', '0%');
+    grad.setAttribute('y2', '100%');
+    const stops = [
+      ['0%', '#0057b7'],
+      ['50%', '#0057b7'],
+      ['50%', '#ffd700'],
+      ['100%', '#ffd700']
+    ];
+    stops.forEach(([offset, color]) => {
+      const s = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+      s.setAttribute('offset', offset);
+      s.setAttribute('stop-color', color);
+      grad.appendChild(s);
+    });
+    defs.appendChild(grad);
+  }
+}
+
+const BOX_MIN = 8, BOX_MAX = 30;
 let miniScale = {};
 
 const XFORM = {
@@ -239,6 +318,12 @@ const XFORM = {
 };
 
 const INVERTED_VARS = new Set(['unemployment']); // higher unemployment -> smaller box
+
+function syncCompareFromSelection(openPanel = false) {
+  comparePins.length = 0;
+  selectedCountries.forEach(id => comparePins.push(id));
+  renderCompare(openPanel);
+}
 
   function buildMiniScales() {
     miniScale = {};
@@ -308,6 +393,7 @@ const fmtPct = v => {
 
   function refreshVisibleCountries() {
     updateCountrySummary();
+    if (countryLayer) countryLayer.setStyle(feat => getCountryStyle(iso(feat.properties)));
     safe(drawArrows, '[country-filter:arrows]');
     safe(drawMinis, '[country-filter:minis]');
   }
@@ -315,10 +401,6 @@ const fmtPct = v => {
   function buildCountryPicker(options) {
     if (countryPickerBuilt) return;
     const list    = document.getElementById('countryPickerList');
-    const search  = document.getElementById('countryPickerSearch');
-    const matchEl = document.getElementById('countryPickerMatch');
-    if (!list) return;
-
     countryPickerBuilt = true;
     const sorted = options
       .filter(d => d && d.id)
@@ -327,50 +409,40 @@ const fmtPct = v => {
     countryIds = sorted.map(d => d.id);
     selectedCountries = new Set(countryIds); // will be overridden by initial landing selection
 
-    list.innerHTML = '';
-    for (const { id, name } of sorted) {
-      const label = document.createElement('label');
-      label.dataset.name = name.toLowerCase();
-      label.innerHTML =
-        `<input type="checkbox" value="${id}"> ${name}`;
-      list.appendChild(label);
-    }
-
-    list.addEventListener('change', e => {
-      if (e.target?.matches('input[type=checkbox]')) {
-        const val = e.target.value;
-        if (e.target.checked) selectedCountries.add(val);
-        else selectedCountries.delete(val);
-        refreshVisibleCountries();
+    if (list) {
+      list.innerHTML = '';
+      for (const { id, name } of sorted) {
+        const label = document.createElement('label');
+        label.dataset.name = name.toLowerCase();
+        label.innerHTML =
+          `<input type="checkbox" value="${id}"> ${name}`;
+        list.appendChild(label);
       }
-    });
+
+      list.addEventListener('change', e => {
+        if (e.target?.matches('input[type=checkbox]')) {
+          const val = e.target.value;
+          if (e.target.checked) selectedCountries.add(val);
+          else selectedCountries.delete(val);
+          refreshVisibleCountries();
+          syncCompareFromSelection();
+        }
+      });
+    }
 
     document.getElementById('countrySelectAll')?.addEventListener('click', () => {
       selectedCountries = new Set(countryIds);
       syncCountryCheckboxes();
       refreshVisibleCountries();
+      syncCompareFromSelection(false);
     });
 
     document.getElementById('countrySelectNone')?.addEventListener('click', () => {
       selectedCountries.clear();
       syncCountryCheckboxes();
       refreshVisibleCountries();
+      syncCompareFromSelection(false);
     });
-
-    if (search) {
-      const applyFilter = () => {
-        const q = search.value.trim().toLowerCase();
-        let visible = 0;
-        list.querySelectorAll('label').forEach(label => {
-          const match = !q || label.dataset.name?.includes(q);
-          label.style.display = match ? '' : 'none';
-          if (match) visible += 1;
-        });
-        if (matchEl) matchEl.textContent = q ? `${visible} match${visible === 1 ? '' : 'es'}` : '';
-      };
-      search.addEventListener('input', applyFilter);
-      applyFilter();
-    }
 
     updateCountrySummary();
   }
@@ -496,9 +568,9 @@ const fmtPct = v => {
     buildMiniScales();
 
     // Countries + labels
-    function drawCountries() {
-      let geo = null;
-      if (!mapData) return;
+  function drawCountries() {
+    let geo = null;
+    if (!mapData) return;
       if (mapData.type === 'FeatureCollection')      geo = mapData;
       else if (mapData.type === 'Feature')           geo = { type: 'FeatureCollection', features: [mapData] };
       else if (mapData.type === 'Topology') {
@@ -508,23 +580,17 @@ const fmtPct = v => {
         geo = topojson.feature(mapData, objs[0]);
       }
 
-      if (countryLayer) map.removeLayer(countryLayer);
-      labelLayer.clearLayers();
-      countryLabels.clear();
+    if (countryLayer) map.removeLayer(countryLayer);
+    labelLayer.clearLayers();
+    countryLabels.clear();
+    ensureUkraineGradient(map._renderer || countryLayer?._renderer);
 
       const pickerOptions = [];
       const seenOptions = new Set();
 
-      countryLayer = L.geoJSON(geo, {
+    countryLayer = L.geoJSON(geo, {
         pane: 'countries',
-        style: () => ({
-          color: '#334155',
-          weight: 1.0,
-          opacity: 0.95,
-          fill: true,
-          fillOpacity: 0.10,
-          fillColor: '#e7edf4'
-        }),
+        style: feat => getCountryStyle(iso(feat?.properties || {})),
         interactive: true,
         smoothFactor: 2.0,
         tolerance: 2,
@@ -585,20 +651,16 @@ const fmtPct = v => {
             click: () => {
               const f   = factors[id] || {};
               const ref = flows.find(x => x.dest_iso3 === id) || {};
+              if (selectedCountries.has(id)) selectedCountries.delete(id);
+              else selectedCountries.add(id);
+              syncCountryCheckboxes();
+              refreshVisibleCountries();
+              syncCompareFromSelection(true);
               const permDelta = Number.isFinite(f.ua_perm_delta) ? f.ua_perm_delta : null;
               const permRatio = Number.isFinite(f.ua_perm_per_refugee) ? f.ua_perm_per_refugee : null;
 
               const permDeltaText = permDelta != null ? fmtNum(permDelta)        : '—';
               const permRatioText = permRatio != null ? permRatio.toFixed(3) : '—';
-
-              // pin/unpin
-              const idx = comparePins.indexOf(id);
-              if (idx >= 0) comparePins.splice(idx, 1);
-              else {
-                comparePins.push(id);
-                if (comparePins.length > 5) comparePins.shift();
-              }
-              renderCompare();
             }
           });
         }
@@ -606,7 +668,6 @@ const fmtPct = v => {
 
     if (pickerOptions.length) {
       buildCountryPicker(pickerOptions);
-      document.getElementById('countryPicker')?.setAttribute('open', 'open');
       if (!initialSelectionDone && countryIds.length) {
         const picks = countryIds.slice().sort(() => Math.random() - 0.5).slice(0, Math.min(6, countryIds.length));
         selectedCountries = new Set(picks);
@@ -625,10 +686,21 @@ const fmtPct = v => {
       return Math.max(0, Math.min(1, val));
     }
 
-    function renderCompare() {
+    const getArrowLabel = () =>
+      document.getElementById('arrowColorVar')?.selectedOptions?.[0]?.text || 'Arrow metric';
+
+    const metricColorFor = (key, val) => {
+      if (key === 'arrow') return arrowColor(val || 0);
+      return METRIC_COLORS[key] || '#94a3b8';
+    };
+
+    renderCompare = function renderCompare(openPanel = false) {
       const panel = document.getElementById('detailPanel');
       const body = document.getElementById('detail-body');
       if (!panel || !body) return;
+      // keep comparePins in sync with selectedCountries
+      comparePins.length = 0;
+      selectedCountries.forEach(id => comparePins.push(id));
       if (!comparePins.length) {
         body.innerHTML = 'Click countries to add them here.';
         hideDetail();
@@ -641,25 +713,30 @@ const fmtPct = v => {
         const arrowVal = getArrowColorValue(ref);
         return `
           <div class="compare-card">
-            <h4>${name} (${id})</h4>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+              <h4>${name} (${id})</h4>
+              <button class="compare-remove" data-id="${id}" aria-label="Remove ${name}">×</button>
+            </div>
             <div class="compare-rows">
-              <div class="compare-row"><span class="label">GDP pc</span><span>${fmtNum(f.gdp_pc)}</span></div>
-              <div class="compare-row"><span class="label">Unemployment</span><span>${fmtPct(f.unemployment)}</span></div>
-              <div class="compare-row"><span class="label">Allocations % GDP</span><span>${fmtPct(f.alloc_pct_gdp)}</span></div>
-              <div class="compare-row"><span class="label">Total refugees</span><span>${formatCount(ref.total_refugees)}</span></div>
-              <div class="compare-row"><span class="label">Arrow metric</span><span>${fmtPct(arrowVal)}</span></div>
-              <div class="compare-row"><span class="label">Children %</span><span>${fmtPct(ref.pct_children)}</span></div>
-              <div class="compare-row"><span class="label">Adult women %</span><span>${fmtPct(ref.pct_women_adult)}</span></div>
-              <div class="compare-row"><span class="label">Adult men %</span><span>${fmtPct(ref.pct_men_adult)}</span></div>
-              <div class="compare-row"><span class="label">Elderly %</span><span>${fmtPct(ref.pct_elderly)}</span></div>
+              <div class="compare-row"><span class="label" style="color:${metricColorFor('gdp_pc')}">GDP pc</span><span>${fmtNum(f.gdp_pc)}</span></div>
+              <div class="compare-row"><span class="label" style="color:${metricColorFor('unemployment')}">Unemployment</span><span>${fmtPct(f.unemployment)}</span></div>
+              <div class="compare-row"><span class="label" style="color:${metricColorFor('alloc_pct_gdp')}">Allocations % GDP</span><span>${fmtPct(f.alloc_pct_gdp)}</span></div>
+              <div class="compare-row"><span class="label" style="color:#94a3b8">Total refugees</span><span>${formatCount(ref.total_refugees)}</span></div>
+              <div class="compare-row"><span class="label" style="color:${metricColorFor('arrow', arrowVal)}">Arrow metric</span><span>${fmtPct(arrowVal)}</span></div>
             </div>
           </div>
         `;
       }).join('');
       body.innerHTML = `<div class="compare-list">${rows}</div>`;
-      panel.classList.add('open');
-      panel.style.display = 'block';
-      panel.focus?.();
+      const shouldOpen = openPanel || panel.classList.contains('open');
+      if (shouldOpen) {
+        panel.classList.add('open');
+        panel.style.display = 'block';
+        panel.focus?.();
+      } else {
+        panel.classList.remove('open');
+        panel.style.display = 'none';
+      }
     }
 
     function bez(a, c, b, n = 40) {
@@ -705,9 +782,20 @@ const fmtPct = v => {
           opacity: 0.9,
           lineCap: 'round',
           lineJoin: 'round',
-          interactive: false,
+          interactive: true,
           className: 'flow-arrow'
         }).addTo(arrowsGroup);
+        const val = getArrowColorValue(d);
+        layer.bindTooltip(
+          `<div><b>${getArrowLabel()}:</b> ${fmtPct(val)}</div><div><b>Total refugees:</b> ${formatCount(d.total_refugees)}</div>`,
+          {
+            direction: 'auto',
+            opacity: 0.95,
+            className: 'arrow-tip',
+            sticky: true,
+            offset: [0, -6]
+          }
+        );
         const path = layer._path;
         if (path) {
           path.style.transition = 'opacity 250ms ease';
@@ -718,10 +806,10 @@ const fmtPct = v => {
     }
 
     // Minis
-    function project(lat, lon) {
-      const p = map.latLngToLayerPoint([lat, lon]);
-      return [p.x, p.y];
-    }
+  function project(lat, lon) {
+    const p = map.latLngToLayerPoint([lat, lon]);
+    return [p.x, p.y];
+  }
 
     function drawMinis() {
       const active = getActiveFactors();
@@ -795,24 +883,29 @@ const fmtPct = v => {
         .attr('fill',   s => COLORS[s.varName]   || '#9ca3af')
         .attr('stroke', s => STROKES[s.varName]  || '#374151');
 
+      const baseW = BOX_MAX;
+      const baseGap = 6;
+      const baseH = BOX_MAX;
+
       const applyPos = sel => sel
         .attr('x', function (s, i) {
-          const w = BOX_MAX;
           if (mode === 'side') {
-            return i * (w + 4);
+            const d = this.parentNode.__data__;
+            const totalW = d.sizes.length * baseW + (d.sizes.length - 1) * baseGap;
+            return -totalW / 2 + i * (baseW + baseGap);
           }
-          return -w / 2;
+          return -baseW / 2;
         })
         .attr('y', function (s, i) {
           const d = this.parentNode.__data__;
           if (mode === 'side') {
-            return BOX_MAX - s.s;
+            return -s.s;
           }
           const total = d3.sum(d.sizes, e => e.s) + (d.sizes.length - 1) * 2;
           const top   = -total / 2 + d3.sum(d.sizes.slice(0, i), e => e.s) + i * 2;
           return top;
         })
-        .attr('width', BOX_MAX)
+        .attr('width', baseW)
         .attr('height', s => s.s);
 
       if (shouldTransition) {
@@ -847,9 +940,9 @@ const fmtPct = v => {
       const labelEl = document.getElementById('arrowColorVar');
       const label = labelEl?.selectedOptions?.[0]?.text || 'Children %';
 
-      const W = 300, H = 180;
-      const P = { t: 8, r: 16, b: 12, l: 16 };
-      const gradH = 16;
+      const W = 320, H = 200;
+      const P = { t: 10, r: 18, b: 14, l: 18 };
+      const gradH = 18;
 
       const svg = root
         .append('svg')
@@ -860,15 +953,15 @@ const fmtPct = v => {
       svg
         .append('text')
         .attr('x', P.l)
-        .attr('y', P.t + 12)
+        .attr('y', P.t + 14)
         .attr('class', 'legend-title')
         .text(`Arrow color — ${label}`);
       svg
         .append('text')
         .attr('x', P.l)
-        .attr('y', P.t + 26)
+        .attr('y', P.t + 30)
         .attr('class', 'legend-tick')
-        .text('0% to 100% of chosen demographic');
+        .text('Comparison metrics: arrow hue = demographic %, stroke = refugee count');
 
       const defs = svg.append('defs');
       const grad = defs
@@ -930,7 +1023,7 @@ const fmtPct = v => {
 
       const rows = svg
         .append('g')
-        .attr('transform', `translate(${P.l},${P.t + 18 + gradH + 48})`);
+        .attr('transform', `translate(${P.l},${P.t + 20 + gradH + 56})`);
 
       rows
         .selectAll('g.row')
@@ -1020,7 +1113,9 @@ const fmtPct = v => {
     safe(renderBoxLegend,   '[legend:boxes]');
 
     // Reposition minis on pan/zoom
-    map.on('moveend zoomend', () => safe(drawMinis, '[event:minis]'));
+    map.on('moveend zoomend', () => {
+      safe(drawMinis, '[event:minis]');
+    });
 
     // UI
     document.querySelectorAll('.controls .factor-toggle, .controls select').forEach(el => {
@@ -1030,6 +1125,7 @@ const fmtPct = v => {
         safe(drawMinis,  '[ui:minis]');
         safe(renderArrowLegend, '[ui:legend-arrows]');
         safe(renderBoxLegend,   '[ui:legend-boxes]');
+        safe(() => renderCompare(false), '[ui:compare]');
       });
     });
 
@@ -1040,27 +1136,6 @@ const fmtPct = v => {
       });
     });
 
-    document.getElementById('resetBtn')?.addEventListener('click', () => {
-      document
-        .querySelectorAll('.controls .factor-toggle')
-        .forEach(el => { el.checked = false; });
-      const arrowSel = document.getElementById('arrowColorVar');
-      if (arrowSel) arrowSel.value = 'pct_children';
-      const radio = document.querySelector('input[name=boxmode][value="stack"]');
-      if (radio) radio.checked = true;
-      selectedCountries = new Set(countryIds);
-      syncCountryCheckboxes();
-      updateCountrySummary();
-      buildMiniScales();
-      safe(drawArrows, '[reset:arrows]');
-      safe(drawMinis,  '[reset:minis]');
-      safe(renderArrowLegend, '[reset:legend-arrows]');
-      safe(renderBoxLegend,   '[reset:legend-boxes]');
-      comparePins.length = 0;
-      renderCompare();
-      hideDetail();
-    });
-
     const closeBtn = document.getElementById('detailClose');
     if (closeBtn) {
       closeBtn.addEventListener('click', e => {
@@ -1069,11 +1144,27 @@ const fmtPct = v => {
         hideDetail();
       });
     }
+    document.getElementById('detail-body')?.addEventListener('click', e => {
+      const btn = e.target.closest('.compare-remove');
+      if (btn) {
+        const id = btn.dataset.id;
+        if (id) {
+          selectedCountries.delete(id);
+          syncCountryCheckboxes();
+          refreshVisibleCountries();
+          syncCompareFromSelection();
+        }
+      }
+    });
     const clearBtn = document.getElementById('detailClear');
     if (clearBtn) {
       clearBtn.addEventListener('click', () => {
+        selectedCountries.clear();
         comparePins.length = 0;
-        renderCompare();
+        syncCountryCheckboxes();
+        refreshVisibleCountries();
+        renderCompare(false);
+        hideDetail();
       });
     }
 
